@@ -1,0 +1,219 @@
+---
+title: "Data Science II Homework 1"
+author: "Arghya Kannadaguli (ak5357)"
+date: "2025-02-26"
+output: html_document
+---
+
+**Assignment Description:** In this exercise, we predict the sale price of a house based on various characteristics. The training data are in “housing train.csv”, and the test data are in “housing test.csv”. The response is in the column “Sale price”, and other variables can be used as predictors. The variable definitions can be found in “dictionary.txt”.
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r libraries, message = FALSE}
+library(glmnet)
+library(caret)
+library(tidyverse)
+library(dplyr)
+library(plotmo)
+library(pls)
+```
+
+```{r data_import, message = FALSE}
+train_df = read_csv("data/housing_training.csv") |> 
+  janitor::clean_names() |> 
+  relocate(sale_price)
+test_df = read_csv("data/housing_test.csv") |> 
+  janitor::clean_names() |> 
+  relocate(sale_price)
+```
+
+## **Part (a)**
+
+**(a) Fit a lasso model on the training data. Report the selected tuning parameter and the test error. When the 1SE rule is applied, how many predictors are included in the model?**
+
+```{r}
+set.seed(2025)
+
+x = model.matrix(sale_price ~ ., train_df)[, -1]
+y = train_df$sale_price
+
+lambda_seq = exp(seq(8, -3, length = 100))
+```
+
+```{r}
+cv_lasso = cv.glmnet(x, y,
+                     alpha = 1,
+                     lambda = lambda_seq)
+
+cv_lasso$lambda.min
+```
+
+The selected tuning parameter is `r cv_lasso$lambda.min`.
+
+The following plot visualizes the training mean squared error for various values for the tuning parameter lambda.
+```{r}
+plot(cv_lasso)
+```
+
+The following plot visualizes the selection of predictor variables for various values of the tuning parameter lambda.
+```{r}
+plot_glmnet(cv_lasso$glmnet.fit)
+```
+
+There are a total of 40 possible coefficients in a full model including all predictors in the train dataset, including the intercept coefficient of $\beta_0$ and the dummy variables created for categorical predictors. Using the 1SE rule, resulting LASSO model eliminates 10 of these coefficients. The result is that using the 1SE rule, there are 29 predictors included in the model (including dummy variables).
+```{r}
+predict(cv_lasso, s = "lambda.1se", type = "coefficients")
+```
+
+Now let's find the test error.
+```{r}
+test_x = model.matrix(sale_price ~ ., test_df)[, -1]
+lasso_pred = predict(cv_lasso, newx = test_x, s = "lambda.min")
+
+lasso_mae = mean(abs(lasso_pred - test_df$sale_price))
+lasso_rmse = sqrt(mean((lasso_pred - test_df$sale_price)^2))
+```
+
+The test error for the Lasso model is `r lasso_mae` for the mean squared error, and `r lasso_rmse` for the root mean squared error.
+
+## **Part (b)**
+
+**(b) Fit an elastic net model on the training data. Report the selected tuning parameters and the test error. Is it possible to apply the 1SE rule to select the tuning parameters for elastic net? If the 1SE rule is applicable, implement it to select the tuning parameters. If not, explain why.**
+
+```{r}
+set.seed(2025)
+
+ctrl = trainControl(method = "cv") # number = 10 is default for "cv" method
+
+enet_fit = train(sale_price ~ .,
+                 data = train_df,
+                 method = "glmnet",
+                 tuneGrid = expand.grid(alpha = seq(0, 1, length = 21),
+                                        lambda = lambda_seq),
+                 trControl = ctrl)
+
+enet_fit$bestTune
+```
+
+In the elastic net model trained above, the tuning parameters selected for the best fit were $\alpha$ = `r enet_fit$bestTune$alpha`, and $\lambda$ = `r enet_fit$bestTune$lambda`. The plot below visualizes the process of selecting the tuning parameters.
+
+```{r}
+myCol = rainbow(25)
+myPar = list(superpose.symbol = list(col = myCol),
+              superpose.line = list(col = myCol))
+plot(enet_fit, par.settings = myPar, xTrans = log)
+```
+
+Here are the top 10 best tuning parameter sets, and their associated RMSE, RSquared, and some other measures of goodness of fit.
+```{r}
+enet_results = enet_fit$results |> 
+  as.data.frame() |> 
+  as_tibble() |> 
+  arrange(RMSE)
+
+enet_results |> 
+  head(10)
+
+enet_results[1,]$MAE
+enet_results[1,]$RMSE
+```
+
+Now let's find the test error for this model.
+```{r}
+enet_pred = predict(enet_fit, newdata = test_df, s = "lambda.min")
+
+enet_mae = mean(abs(enet_pred - test_df$sale_price))
+enet_rmse = sqrt(mean((enet_pred - test_df$sale_price)^2))
+```
+
+For the test error of the final Elastic Net fit with the best tuning parameter set, the mean absolute error is `r enet_mae` and the RMSE is `r enet_rmse`.
+
+Here are the coefficients resulting from the final model selected from the best tuned parameters in the elastic net model.
+```{r}
+coef(enet_fit$finalModel, enet_fit$bestTune$lambda)
+```
+
+**1SE**
+
+Because this Elastic Net model was created using the `train` function from the `caret` package, it is not possible to easily apply the 1SE method to select the tuning parameters. This is because `caret` does not calculate `lambda.1se`. The `cv.glmnet()` function from thee `glmnet` package does calculate `lambda.1se`, but we have used the `caret` package here, so it is not available.
+
+## **Part (c)**
+
+**(c) Fit a partial least squares model on the training data and report the test error. How many components are included in your model?**
+
+```{r}
+set.seed(2025)
+pls_fit = plsr(sale_price ~ .,
+               data = train_df,
+               scale = TRUE,
+               validation = "CV")
+
+summary(pls_fit)
+```
+
+The following plot visualizes the process of selecting the number of components.
+```{r}
+validationplot(pls_fit, val.type = "MSEP", legendpos = "topright")
+```
+
+Let us see the optimal number of components.
+```{r}
+cv_mse = RMSEP(pls_fit)
+ncomp_cv = which.min(cv_mse$val[1,,])
+ncomp_cv
+```
+
+Now let's calculate the test error.
+```{r}
+test_x = model.matrix(sale_price ~ ., test_df)[, -1]
+pls_pred = predict(pls_fit, newdata = test_df, ncomp = ncomp_cv)
+
+pls_mae = mean(abs(pls_pred - test_df$sale_price))
+pls_rmse = sqrt(mean((pls_pred - test_df$sale_price)^2))
+```
+
+For the test error of the final PLS fit with the best tuning parameter set, the mean absolute error is `r pls_mae` and the RMSE is `r pls_rmse`.
+
+## **Part (d)**
+
+**(d) Choose the best model for predicting the response and explain your choice.**
+
+```{r}
+compare_models_df = tibble(
+    Model = c("Lasso", "Elastic Net", "PLS"),
+    MAE = c(lasso_mae, enet_mae, pls_mae),
+    RMSE = c(lasso_rmse, enet_rmse, pls_rmse)
+  ) |> 
+  arrange(RMSE)
+
+compare_models_df |> 
+  knitr::kable(digits = 2)
+```
+
+Based on these results, we can see that the Elastic Net model has the best MAE and RMSE, which means that it has the fewest large errors. Therefore, I choose the Elastic Net model because it has the lowest errors.
+
+## **Part (e)**
+
+**(e) If R package “caret” was used for the lasso in (a), retrain this model using R package “glmnet”, and vice versa. Compare the selected tuning parameters between the two software approaches. Should there be discrepancies in the chosen parameters, discuss potential reasons for these differences.**
+
+Since I used the `glmnet` package in part (a), I will use the `caret` package here.
+
+```{r}
+set.seed(2025)
+lasso_fit = train(sale_price ~ .,
+  data = train_df,
+  method = "glmnet",
+  tuneGrid = expand.grid(alpha = 1,
+                        lambda = lambda_seq),
+  trControl = ctrl)
+```
+
+The `caret` model has selected $\lambda$ = `r lasso_fit$bestTune$lambda` as the tuning parameter. Recall that the `glmnet` model had selected `r cv_lasso$lambda.min` as the `lambda.min`.
+```{r}
+lasso_fit$bestTune$lambda
+```
+
+The two models have selected slightly different lambdas. The difference in lambda values might be because the `caret` and `glmnet` packages handle cross-validation differently. Even though both used the same set of lambdas and folds, `caret` adds an extra layer of tuning when selecting the best model from the grid. This could cause small differences in the chosen lambda. The `glmnet` model directly uses the results from `cv.glmnet`, which might have slightly different methods for picking the best lambda. Essentially, both are doing similar things but with some small variations in how they optimize the model. Those variations might explain the discrepancy.
+
