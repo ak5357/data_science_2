@@ -1,0 +1,173 @@
+---
+title: "Data Science II Homework 2"
+author: "Arghya Kannadaguli (ak5357)"
+date: "2025-03-17"
+output: html_document
+---
+
+```{r message = FALSE, warning = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(splines)
+library(caret)
+# library(tidymodels)
+# library(mgcv)
+# library(pdp)
+library(earth)
+# library(bayesQR)
+
+set.seed(123)
+```
+
+
+**In this exercise, we explore the use of nonlinear models to analyze the “College” dataset, which contains statistics from 565 U.S. colleges, as reported in a previous issue of U.S. News & World Report. The response variable is the out-of-state tuition (`Outstate`), and the predictors are: **
+
+* `Apps`: Number of applications received
+* `Accept`: Number of applications accepted
+* `Enroll`: Number of new students enrolled
+* `Top10perc`: Pct. new students from top 10% of H.S. class
+* `Top25perc`: Pct. new students from top 25% of H.S. class
+* `F.Undergrad`: Number of fulltime undergraduates
+* `P.Undergrad`: Number of parttime undergraduates
+* `Room.Board`: Room and board costs
+* `Books`: Estimated book costs
+* `Personal`: Estimated personal spending
+* `PhD`: Pct. of faculty with Ph.D.’s
+* `Terminal`: Pct. of faculty with terminal degree
+* `S.F.Ratio`: Student/faculty ratio
+* `perc.alumni`: Pct. alumni who donate
+* `Expend`: Instructional expenditure per student
+* `Grad.Rate`: Graduation rate
+
+**Partition the dataset into two parts: training data (80%) and test data (20%).**
+
+```{r message = FALSE}
+college = read_csv("data/college.csv") |> 
+  janitor::clean_names()
+
+dat_split = rsample::initial_split(data = college, prop = 0.8)
+train_data = rsample::training(dat_split)
+test_data = rsample::testing(dat_split)
+```
+
+## **Part a.**
+
+**Fit smoothing spline models to predict out-of-state tuition (Outstate) using the percentage of alumni who donate (perc.alumni) as the only predictor, across a range of degrees of freedom. Plot the fitted curve for each degree of freedom. Describe the patterns you observe as the degrees of freedom change. Choose an appropriate degree of freedom for the model and plot this optimal fit. Explain the criteria you used to select the degree of freedom.**
+
+**_Plotting the fitted curve for each degree of freedom, across a range of values:_** The following code block defines a range of values to explore for degree of freedom, plots the training dataset, and then iteratively generates and plots spline fits for each degree of freedom value on the train dataset. For each fit, it also calculates the mean squared error, which will be used later to select the optimal fit.
+```{r}
+# Define a range of DFs
+df_range = c(2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20)
+
+# Scatter plot
+plot(train_data$perc_alumni, train_data$outstate, 
+     xlim = c(0,80),
+     pch = 19,
+     col = alpha("black", 0.7), 
+     cex = 0.7,
+     xlab = "Percentage of Alumni Who Donate", 
+     ylab = "Out-of-State Tuition", 
+     main = "Smoothing Spline Fits with\nVarying Degrees of Freedom")
+
+# Color range for plotted spline fits
+myCol = rainbow(length(df_range))
+
+# Empty list to save mse values of all spline fits
+mse_values = numeric(length(df_range))
+
+# Iteratively add fit lines
+for(i in length(df_range):1){
+  # Generate fit
+  spline_fit = smooth.spline(train_data$perc_alumni, train_data$outstate, df = df_range[i])
+  
+  # Plot fit
+  lines(spline_fit, col = myCol[i], lwd = 2)
+  
+  # Calculate MSE
+  predictions = predict(spline_fit, test_data$perc_alumni)$y
+  mse_values[i] = mean((test_data$outstate - predictions)^2)
+  
+  print(paste("Degrees of Freedom:", df_range[i], "| MSE:", round(mse_values[i], 2)))
+}
+
+legend("topright", legend = paste("DF =", df_range), col = rainbow(length(df_range)), lwd = 2, cex = 0.8)
+```
+
+**_Describe the Patterns:_** As the degrees of freedom increase, the line becomes more wavy. With low degrees of freedom, the curve is smooth and less flexible, but could potentially be underfitting the data. With higher degrees of freedom, the curve becomes very flexible, but could potentially be overfitting the data. The middle range of degrees of freedom are most likely to provide a good balance of flexibility.
+
+**_Choose an appropriate degree of freedom and plot._** Let's select optimal fit based on calculated mean squared error (MSE). The MSE is a measure of how well the spline fits the data. The spline with the lowest test MSE has most potential to provide an accurate fit.
+
+```{r}
+df = df_range[which.min(mse_values)]
+paste("Degrees of Freedom:", df, "| MSE:", round(min(mse_values), 2))
+```
+
+According to the MSE calculations, the optimal degree of freedom for the smoothing spline fit for this data is `r df`. Now let's plot this optimal fit.
+
+```{r}
+optimal_spline = smooth.spline(train_data$perc_alumni, train_data$outstate, df = df)
+
+ggplot(data = test_data, aes(x = perc_alumni, y = outstate)) +
+  geom_line(aes(y = predict(optimal_spline, test_data$perc_alumni)$y), color = "maroon", lwd = 0.8) +
+  geom_point(col = "black", alpha = 0.5) +
+  labs(
+    x = "Percent Alumni who Donate",
+    y = "Out-of-state Tuition",
+    title = "Optimal Smoothing Spline Fit",
+    subtitle = paste(df, "degrees of freedom")
+  ) +
+  theme_classic() +
+  theme(plot.title = element_text(face="bold", hjust = 0.5, size=12),
+        plot.subtitle = element_text(face="italic", hjust = 0.5, size=8))
+```
+
+## **Part b**
+
+**Train a multivariate adaptive regression spline (MARS) model to predict the response variable. Report the regression function. Present the partial dependence plot of an arbitrary predictor in your model. Report the test error.**
+
+**Generate MARS model:**
+```{r}
+mars_grid = expand.grid(degree = 1:3, nprune = 2:15)
+ctrl = trainControl(method = "cv", number = 10)
+
+
+mars_fit = train(x = train_data$perc_alumni,
+                 y = train_data$outstate,
+                 method = "earth",
+                 tuneGrid = mars_grid,
+                 trControl = ctrl)
+```
+
+
+
+
+
+**Report regression function:**
+
+
+
+
+**Present partial dependence plot of an arbitrary predictor in my model:**
+
+
+
+
+**Test error:**
+
+
+## **Part c**
+
+**Construct a generalized additive model (GAM) to predict the response variable. For the nonlinear terms included in your model, generate plots to visualize these relationships and discuss your observations. Report the test error.**
+
+
+
+## **Part d**
+
+**In this dataset, would you favor a MARS model over a linear model for predicting out-ofstate tuition? If so, why? More broadly, in general applications, do you consider a MARS model to be superior to a linear model? Please share your reasoning.**
+
+
+
+
+
+
+
