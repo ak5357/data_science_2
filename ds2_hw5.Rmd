@@ -1,0 +1,371 @@
+---
+title: "Data Science II Homework 5"
+author: "Arghya Kannadaguli (ak5357)"
+date: "2025-05-04"
+output: 
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.align = "center")
+
+library(tidyverse)
+library(dplyr)
+library(rsample)
+library(caret)
+library(ISLR)
+library(kernlab)
+library(factoextra)
+library(gridExtra)
+library(corrplot)
+library(RColorBrewer)
+library(gplots)
+library(jpeg)
+library(gt)
+library(gtsummary)
+library(tigris)
+library(sf)
+library(ggplot2)
+
+theme_set(
+  theme_classic()+
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+)
+```
+
+## **Problem 1.**
+
+##### **In this problem, we will apply support vector machines to predict whether a given car gets high or low gas mileage based on the dataset “auto.csv” (used in Homework 3; see Homework 3 for more details of the dataset). The response variable is mpg cat. The predictors are cylinders, displacement, horsepower, weight, acceleration, year, and origin. Split the dataset into two parts: training data (70%) and test data (30%).**
+```{r}
+# Import data
+auto = read_csv("data/auto.csv") |> 
+  mutate(mpg_cat = as.factor(mpg_cat))
+
+# Split Data
+set.seed(2025)
+a.data.split = initial_split(auto, prop = 0.7)
+a.train = training(a.data.split)
+a.test = testing(a.data.split)
+```
+
+##### **(a) Fit a support vector classifier to the training data. What are the training and test error rates?**
+
+**Fit SVM Classifier**
+```{r eval = FALSE}
+# Train Control
+set.seed(2025)
+ctrl = trainControl(method = "cv")
+
+# Fit SVM
+set.seed(2025)
+a.svm = train(mpg_cat ~ .,
+               data = a.train,
+               method = "svmLinear",
+               tuneGrid = data.frame(C = exp(seq(-5, 2, len = 50))),
+               trControl = ctrl)
+```
+
+```{r include = FALSE}
+#saveRDS(a.svm, file = "RDS/hw5_a_svm.rds")
+a.svm = readRDS("RDS/hw5_a_svm.rds")
+```
+
+**Visualize**
+```{r}
+# Visualize
+plot(a.svm, highlight = TRUE)
+```
+
+**Training Error**
+
+Based on the confusion matrix shown below, we can see that the model has an overall accuracy of 0.9234 on the training data, and therefore a 0.0766 error rate. 
+```{r}
+# Predictions on Training Data
+a.pred.train = predict(a.svm, newdata = a.train)
+
+confusionMatrix(data = a.pred.train, reference = a.train$mpg_cat)
+```
+
+**Test Error**
+
+Based on the confusion matrix shown below, we can see that the model has an overall accuracy of 0.8983 on the training data, and therefore a 0.1017 error rate.
+```{r}
+# Predictions on Training Data
+a.pred.test = predict(a.svm, newdata = a.test)
+
+confusionMatrix(data = a.pred.test, reference = a.test$mpg_cat)
+```
+
+
+##### **(b) Fit a support vector machine with a radial kernel to the training data. What are the training and test error rates?**
+
+**Fit SVM with radial kernel**
+```{r eval = FALSE}
+# Set tuning grid
+svmr.grid = expand.grid(C = exp(seq(1, 7, len = 50)),
+                        sigma = exp(seq(-10, -2, len = 20)))
+
+# Fit SVM with Radial Kernel
+set.seed(2025)
+a.svm.rad = train(mpg_cat ~ .,
+               data = a.train,
+               method = "svmRadialSigma",
+               tuneGrid = svmr.grid,
+               trControl = ctrl)
+```
+
+```{r include = FALSE}
+#saveRDS(a.svm.rad, file = "RDS/hw5_a_svm_rad.rds")
+a.svm.rad = readRDS("RDS/hw5_a_svm_rad.rds")
+```
+
+**Visualize**
+```{r}
+# Visualize
+myCol = rainbow(25)
+myPar = list(superpose.symbol = list(col = myCol),
+  superpose.line = list(col = myCol))
+
+plot(a.svm.rad, highlight = TRUE, par.settings = myPar)
+```
+
+**Training Error**
+
+Based on the confusion matrix shown below, we can see that the model has an overall accuracy of 0.9416 on the training data, and therefore a 0.0584 error rate. 
+```{r}
+# Predictions on Training Data
+a.pred.rad.train = predict(a.svm.rad, newdata = a.train)
+
+confusionMatrix(data = a.pred.rad.train, reference = a.train$mpg_cat)
+```
+
+**Test Error**
+
+Based on the confusion matrix shown below, we can see that the model has an overall accuracy of 0.8983 on the training data, and therefore a 0.1017 error rate.
+```{r}
+# Predictions on Training Data
+a.pred.rad.test = predict(a.svm.rad, newdata = a.test)
+
+confusionMatrix(data = a.pred.rad.test, reference = a.test$mpg_cat)
+```
+
+## **Problem 2.**
+
+##### **In this problem, we perform hierarchical clustering on the states using the USArrests data in the ISLR package. For each of the 50 states in the United States, the dataset contains the number of arrests per 100,000 residents for each of three crimes: Assault, Murder, and Rape. The dataset also contains the percent of the population in each state living in urban areas, UrbanPop. The four variables will be used as features for clustering.** 
+```{r}
+data("USArrests")
+usarrests = USArrests
+rm(USArrests)
+
+head(usarrests)
+```
+
+##### **(a) Using hierarchical clustering with complete linkage and Euclidean distance, cluster the states. Cut the dendrogram at a height that results in three distinct clusters. Which states belong to which clusters?**
+
+```{r}
+# Hierarchical Clusters
+hc.complete = hclust(dist(usarrests), method = "complete")
+
+# Visualize
+fviz_dend(hc.complete, k = 4,
+          cex = 0.3,
+          palette = "jco", # color scheme; other palettes:"npg","aaas"...
+          color_labels_by_k = TRUE,
+          rect = TRUE, # whether to add a rectangle around groups.
+          rect_fill = TRUE,
+          rect_border = "jco",
+          labels_track_height = 2.5)
+```
+
+**States by Cluster**
+```{r}
+hc.3 = cutree(hc.complete, 3)
+#   as.data.frame() |> 
+#   rownames_to_column()
+# names(hc.3) = c("state", "cluster")
+```
+
+**Cluster 1**
+```{r}
+usarrests[hc.3 == 1,] |>
+  rownames_to_column() |>
+  rename(state = rowname) |> 
+  gt() |>
+  fmt_number(columns = c(state, Murder, Assault, UrbanPop, Rape), decimals = 1) |>
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())) |>
+  tab_header(
+    title = "Cluster 1 States") |>
+  cols_label(
+    state = "State",
+    Murder = "Murder",
+    Assault = "Assault",
+    UrbanPop = "Urban Population (%)",
+    Rape = "Rape") |>
+  tab_options(
+    table.font.size = "small",
+    heading.align = "center")
+```
+
+**Cluster 2**
+```{r}
+usarrests[hc.3 == 2,] |>
+  rownames_to_column() |>
+  rename(state = rowname) |> 
+  gt() |>
+  fmt_number(columns = c(state, Murder, Assault, UrbanPop, Rape), decimals = 1) |>
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())) |>
+  tab_header(
+    title = "Cluster 1 States") |>
+  cols_label(
+    state = "State",
+    Murder = "Murder",
+    Assault = "Assault",
+    UrbanPop = "Urban Population (%)",
+    Rape = "Rape") |>
+  tab_options(
+    table.font.size = "small",
+    heading.align = "center")
+```
+
+**Cluster 3**
+```{r}
+usarrests[hc.3 == 3,] |>
+  rownames_to_column() |>
+  rename(state = rowname) |> 
+  gt() |>
+  fmt_number(columns = c(state, Murder, Assault, UrbanPop, Rape), decimals = 1) |>
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())) |>
+  tab_header(
+    title = "Cluster 1 States") |>
+  cols_label(
+    state = "State",
+    Murder = "Murder",
+    Assault = "Assault",
+    UrbanPop = "Urban Population (%)",
+    Rape = "Rape") |>
+  tab_options(
+    table.font.size = "small",
+    heading.align = "center")
+```
+
+##### **(b) Hierarchically cluster the states using complete linkage and Euclidean distance, after scaling the variables to have standard deviation one. Does scaling the variables change the clustering results? In your opinion, should the variables be scaled before the inter-observation dissimilarities are computed?**
+
+```{r}
+us.scaled = usarrests
+us.scaled$Murder = (us.scaled$Murder)/sd(us.scaled$Murder)
+us.scaled$Assault = (us.scaled$Assault)/sd(us.scaled$Assault)
+us.scaled$UrbanPop = (us.scaled$UrbanPop)/sd(us.scaled$UrbanPop)
+us.scaled$Rape = (us.scaled$Rape)/sd(us.scaled$Rape)
+
+# us.scaled = usarrests |> 
+#   mutate(across(everything(), scale))
+
+# Hierarchical Clusters
+hc.scaled = hclust(dist(us.scaled), method = "complete")
+
+# Visualize
+fviz_dend(hc.scaled, k = 4,
+          cex = 0.3,
+          palette = "jco", # color scheme; other palettes:"npg","aaas"...
+          color_labels_by_k = TRUE,
+          rect = TRUE, # whether to add a rectangle around groups.
+          rect_fill = TRUE,
+          rect_border = "jco",
+          labels_track_height = 2.5)
+```
+
+**Does scaling the variables change the clustering results?**
+
+Many states have  have changed substantially after the data was scaled by standard deviation. The height of the dendrogram has also changed from ~300 to ~6. This is likely because the relative "positions" of the data points as plotted in a 4-d space (4 variables) have changed once the values were scaled, so that would influence calculations of Euclidean distance.
+
+**In your opinion, should the variables be scaled before the inter-observation dissimilarities are computed?**
+
+Yes, variables should be scaled before the Euclidean distances are computed to remove the influence of variables' units on the splitting of clusters. Scaling for distance-based algorithms is important because without normalizing by SD, Euclidean distances are influenced not only by variance in the data, but also by each variable's units, leading to a result that may not reflect true patterns. Variables with larger scales/variances would disproportionately influence clusters.
+
+```{r}
+hc.sc.3 = cutree(hc.scaled, 3)
+hc.sc.3
+```
+
+Adding cluster membership to usarrests data for visualizations.
+```{r}
+# Add cluster membership to usarrests df
+us.dat = usarrests |> 
+  rownames_to_column() |> 
+  janitor::clean_names() |> 
+  rename(state = rowname)
+
+us.dat$hc = hc.3
+us.dat$hc_sc = hc.sc.3
+```
+
+How many states have changed cluster membership?
+```{r}
+us.dat |> 
+  count(hc != hc_sc)
+```
+
+To visualize the difference in clusters, here's a map. Alaska and Hawaii do not change clusters, so they have not been included in this map.
+
+```{r include = FALSE}
+# Get states from tigris
+states_sf = states(cb = TRUE, resolution = "20m", year = 2020) |> 
+  st_transform(4326) |> 
+  inner_join(us.dat, by = c("NAME" = "state"))
+```
+
+```{r eval = FALSE}
+# Get states from tigris
+states_sf = states(cb = TRUE, resolution = "20m", year = 2020) |> 
+  st_transform(4326) |> 
+  inner_join(us.dat, by = c("NAME" = "state"))
+```
+
+```{r}
+# Map
+states_sf |>
+  mutate(change = ifelse(hc == hc_sc, "No Change", "Cluster Changed")) |> 
+  pivot_longer(
+    cols = c(hc, hc_sc),
+    names_to = "scale",
+    values_to = "cluster"
+  ) |> 
+  mutate(scale = ifelse(scale == "hc", "Not Scaled", "Scaled")) |> 
+  ggplot() +
+  geom_sf(aes(fill = as.factor(cluster))) +
+  geom_sf(aes(color = as.factor(change)), fill = "NA") +
+  scale_fill_brewer(palette = "Spectral") +
+  scale_color_manual(values = c("No Change" = NA, "Cluster Changed" = "red")) +
+  facet_wrap(~ scale) +
+  labs(fill = "Cluster", color = "") +
+  xlim(c(-125, -67)) +
+  ylim(c(25, 50)) +
+  theme(legend.position = "bottom")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,385 @@
+---
+title: "Data Science II Homework 4"
+author: "Arghya Kannadaguli (ak5357)"
+date: "2025-04-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.align = "center")
+
+library(tidyverse)
+library(dplyr)
+library(rsample)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(party)
+library(partykit)
+library(randomForest)
+library(ranger)
+library(gbm)
+library(ggplot2)
+library(RColorBrewer)
+library(pROC)
+
+theme_set(
+  theme_classic()+
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+)
+```
+
+
+## **Problem 1**
+**In this exercise, we will build tree-based models using the College data (see “College.csv” in Homework 2). The response variable is the out-of-state tuition (Outstate), and the predictors are: **
+
+* `Apps`: Number of applications received
+* `Accept`: Number of applications accepted
+* `Enroll`: Number of new students enrolled
+* `Top10perc`: Pct. new students from top 10% of H.S. class
+* `Top25perc`: Pct. new students from top 25% of H.S. class
+* `F.Undergrad`: Number of fulltime undergraduates
+* `P.Undergrad`: Number of parttime undergraduates
+* `Room.Board`: Room and board costs
+* `Books`: Estimated book costs
+* `Personal`: Estimated personal spending
+* `PhD`: Pct. of faculty with Ph.D.’s
+* `Terminal`: Pct. of faculty with terminal degree
+* `S.F.Ratio`: Student/faculty ratio
+* `perc.alumni`: Pct. alumni who donate
+* `Expend`: Instructional expenditure per student
+* `Grad.Rate`: Graduation rate
+
+**Partition the dataset into two parts: training data (80%) and test data (20%).**
+
+```{r}
+# Import Data
+college = read_csv("data/college.csv") |> 
+  janitor::clean_names() |> 
+  select(-college) # all rows have distinct college names
+
+# Split Data
+set.seed(2025)
+c.data.split = initial_split(college, prop = 0.8)
+c.train = training(c.data.split)
+c.test = testing(c.data.split)
+```
+
+##### **(a) Build a regression tree on the training data to predict the response (10pts). Create a plot of the tree (10pts).**
+
+The following code chunks build a regression tree with an initial complexity parameter `cp = 0`, visualizes the error relative to different `cp` values, prunes the tree based on the minimum error in the cp table, and finally plots the pruned tree.
+
+Since the resulting tree does not have an excessive amount of splits and because all predictors are continuous, I believe it is fine to use the simpler `rpart()` model rather than opting for a `ctree()` model. The `rpart()` function fits a CART-style regression tree, which performs splits by minimizing residual sum of squares.
+
+The final pruned tree includes the following as key predictors of `outstate`:
+
+* `expend`: Instructional expenditure per student
+* `apps`: Number of applications received
+* `room_board`: Room and board costs
+* `accept`: Number of applications accepted
+* `perc_alumni`: Pct. alumni who donate
+
+```{r}
+# Build tree with cp=0
+set.seed(2025)
+c.tree1 = rpart(formula = outstate ~ .,
+                data = c.train,
+                control = rpart.control(cp = 0))
+
+# Plot complexity parameter
+plotcp(c.tree1)
+
+# Prune tree based on cp table
+c.cptable = c.tree1$cptable
+c.minErr = which.min(c.cptable[,4]) # rownum of min error
+c.tree2 = rpart::prune(c.tree1, cp = c.cptable[c.minErr, 1])
+
+# Plot pruned tree as rpart object
+rpart.plot(c.tree2)
+```
+
+```{r eval = FALSE}
+# Plot pruned tree as a party object
+plot(as.party(c.tree2))
+```
+
+![](figures/hw4_p1a_partyplot.png)
+_____
+
+##### **(b) Perform random forest on the training data (10pts). Report the variable importance (5pts) and the test error (5pts).**
+
+The code below fit a `ranger()` random forest model to predict `outstate` based on the predictors. Based on the variable importance plot, we can see that `expend` and `room_board` have the most influence by far on predicting out-of-state tuition, followed by `apps`, `terminal`, and then other predictors.
+
+The test RMSE of this model was 1853.998. To contextualize this, consider that the standard deviation of the response variable in the train set was 3711.188. Relative to the variance in the training data, the test error is low, indicating that the model has good predictive performance.
+
+```{r}
+# Perform random forest
+set.seed(2025)
+c.ranger = ranger(formula = outstate ~ ., 
+       data = c.train,
+       splitrule = "variance",
+       importance = "permutation",
+       scale.permutation.importance = TRUE)
+
+# Variable Importance
+par(mar = c(5, 6, 4, 1), mgp = c(4, 0.7, 0))
+barplot(sort(ranger::importance(c.ranger), decreasing = FALSE),
+        las = 2, horiz = TRUE, cex.names = 0.7,
+        col = colorRampPalette(colors = c("lightblue","darkslateblue"))(19),
+        main = "Variable Importance Barplot of Random Forest",
+        xlab = "Scaled Permutation Importance",
+        ylab = "Predictor Variables")
+```
+
+The test error of this model is 1853.998. This is low relative to the spread of the original response variable in the train set.
+```{r}
+# Test RMSE
+pred.c.ranger = predict(c.ranger, data = c.test)
+rmse.c.ranger = RMSE(pred.c.ranger$predictions, c.test$outstate)
+rmse.c.ranger
+
+# For reference, standard deviation of response in train set
+sd(c.train$outstate)
+```
+
+_____
+##### **(c) Perform boosting on the training data (10pts). Report the variable importance (5pts) and the test error (5pts).**
+
+```{r eval = FALSE}
+# Fit gradient boosting model with gaussian loss function
+set.seed(2025)
+c.gbm1 = gbm(formula = outstate ~ .,
+    data = c.train,
+    distribution = "gaussian",
+    n.trees = 5000,
+    interaction.depth = 2,
+    shrinkage = 0.005,
+    cv.folds = 10)
+
+# Plot loss function
+gbm.perf(c.gbm1, method = "cv")
+```
+
+```{r include = FALSE}
+#saveRDS(c.gbm1, file = "RDS/c_gbm1.rds")
+c.gbm1 = readRDS("RDS/c_gbm1.rds")
+```
+
+```{r eval = FALSE}
+# Now using Caret package
+# Perform grid search to tune model
+set.seed(2025)
+ctrl = trainControl(method = "cv")
+
+# Generate grid of potential tuning parameters
+gbm.grid = expand.grid(
+  n.trees = c(100, 200, 500, 1000, 2000, 5000, 10000), 
+  interaction.depth = 1:4, 
+  shrinkage = c(0.005,0.01,0.05),
+  n.minobsinnode = c(10))
+
+# Train model with tuning parameter grid
+set.seed(2025)
+c.gbm2 <- train(outstate ~ . ,
+                 data = c.train,
+                 method = "gbm",
+                 tuneGrid = gbm.grid,
+                 trControl = ctrl,
+                 verbose = FALSE # don't display details during training
+                 )
+```
+
+```{r include = FALSE}
+#saveRDS(c.gbm2, file = "RDS/c_gbm2.rds")
+c.gbm2 = readRDS("RDS/c_gbm2.rds")
+```
+
+The following two plots depict variable importance through their relative influence. We can see that expend, room board, terminal, and apps remain in the top 5 most influential predictors just like they were in the ranger's variable importance plot.
+```{r}
+# Variable importance
+summary(c.gbm2$finalModel, las = 2, cBars = 16, cex.names = 0.6)
+
+summary(c.gbm2$finalModel, plotit = FALSE) |> 
+  as_tibble() |> 
+  mutate(var = fct_reorder(.f = var, .x = rel.inf, .fun = min)) |> 
+  ggplot(aes(x = var, y = rel.inf, fill = var)) + 
+  geom_bar(stat = "identity", color = "black") + 
+  scale_fill_manual(values = colorRampPalette(colors = c("lightblue","darkslateblue"))(16)) +
+  coord_flip() + 
+  labs(
+    title = "Variable Importance Barplot of GBM",
+    x = "Relative Influence",
+    y = "Predictor Variables") +
+  theme(legend.position = "none")
+```
+
+The test error of this model is 4974.477. This is high relative to the spread of the original response variable in the train set.
+```{r}
+# Test RMSE
+pred.c.gbm = predict(c.gbm2, data = c.test)
+rmse.c.gbm = RMSE(pred.c.gbm, c.test$outstate)
+rmse.c.gbm
+
+# For reference, standard deviation of response in train set
+sd(c.train$outstate)
+```
+
+When comparing the ranger random forest model and the GBM model, we can see that the random forest model appears to have better predictive ability, as its test RMSE was much lower. This may be because random forest is robust to whereas GBM is more sensitive to tuning parameters. GBM also has a much higher test error than train error, suggesting overfitting.
+```{r}
+
+attributes(c.gbm2)
+
+cat("Model Comparison\n",
+    "Random Forest\n",
+    "\tTrain RMSE:", RMSE(c.ranger$predictions, c.train$outstate), "\n",
+    "\tTest RMSE:", rmse.c.ranger, "\n",
+    "\n",
+    "GBM\n",
+    "\tTrain RMSE:", sqrt(mean((c.gbm2$results$RMSE)^2)), "\n",
+    "\tTest RMSE:", rmse.c.gbm, "\n")
+
+```
+
+_____
+## **Problem 2**
+**This problem is based on the data “auto.csv” in Homework 3. Split the dataset into two parts: training data (70%) and test data (30%).**
+
+```{r}
+# Import data
+auto = read_csv("data/auto.csv") |> 
+  mutate(mpg_cat = as.factor(mpg_cat))
+
+# Split Data
+set.seed(2025)
+a.data.split = initial_split(auto, prop = 0.7)
+a.train = training(a.data.split)
+a.test = testing(a.data.split)
+```
+
+##### **(a) Build a classification tree using the training data, with mpg cat as the response (10pts). Which tree size corresponds to the lowest cross-validation error? Is this the same as the tree size obtained using the 1 SE rule (10pts)?**
+
+```{r}
+# Generate tree model
+set.seed(2025)
+a.tree1 = rpart(formula = mpg_cat ~ .,
+                data = a.train,
+                control = rpart.control(cp = 0),
+                method = "class")
+
+# See CP table
+a.cptable = a.tree1$cptable
+a.cptable
+
+# Plot complexity parameter
+plotcp(a.tree1)
+```
+
+**Minimum CV Error Fit**
+
+Now let's prune the tree according to minimum CV error. The model selects the second row. The output message below tells us the final CP, splits, and xerror.
+```{r}
+# Which level has the minimum CV?
+a.minErr = which.min(a.cptable[,4]) # rownum of min error
+cat("According to the minimum CV rule, the row of the CP table with the minimum CV is: ", a.minErr, ". This tree has a CP of ", a.cptable[a.minErr, 1], ", ", a.cptable[a.minErr, 2], " splits, and an xerror of ", a.cptable[a.minErr, 4], ".")
+
+# Prune accordingly
+a.tree1 = rpart::prune(a.tree1, cp = a.cptable[a.minErr, 1])
+
+# Plot pruned tree as rpart object
+rpart.plot(a.tree1)
+```
+
+**1SE Fit**
+
+Next let's figure out the 1SE fit. The 1SE rules is that we want the simplest model (lowest complexity parameter) where the xerror value is less than the upper limit of the confidence interval of the overall minimum xerror. This method also selects the same tree. This is because trees with 2-5 splits seem to have equal xerror values and the minimum CV approach already chose the simplest model among them.
+```{r}
+# Get 1SE value
+a.min1SE = a.cptable[a.minErr, 4] + 1.96*a.cptable[a.minErr, 4]
+
+# Keep only rows with xerror less than min 1SE
+a.cpdf = as_tibble(a.cptable) |> 
+  filter(xerror < a.min1SE)
+
+# Of those, select simplest model and prune tree accordingly
+a.1SE.result = filter(a.cpdf, nsplit == min(a.cpdf$nsplit))
+a.tree2 = rpart::prune(a.tree1, cp = a.1SE.result$CP)
+cat("According to the minimum CV rule, the row of the CP table with the minimum CV is: ", 2, ". This tree has a CP of ", a.1SE.result$CP, ", ", a.1SE.result$nsplit, " splits, and an xerror of ", a.1SE.result$xerror, ".")
+
+# Plot pruned tree as rpart object
+rpart.plot(a.tree2)
+```
+
+_____
+##### **(b) Perform boosting on the training data and report the variable importance (10pts). Report the test data performance (10pts).**
+
+```{r eval = FALSE}
+# Define ctrl
+set.seed(2025)
+a.ctrl = trainControl(method = "cv",
+                     classProbs = TRUE,
+                     summaryFunction = twoClassSummary)
+
+# Get Tune Grid
+a.gbm2.grid = expand.grid(n.trees = c(100,200,500,1000,2000,5000,10000),
+  interaction.depth = 1:5,
+  shrinkage = c(0.001, 0.003, 0.005),
+  n.minobsinnode = 10)
+
+# Train GBM
+set.seed(2025)
+a.gbm2 = train(mpg_cat ~ .,
+               data = a.train,
+               tuneGrid = a.gbm2.grid,
+               trControl = a.ctrl,
+               method = "gbm",
+               distribution = "adaboost",
+               metric = "ROC",
+               verbose = FALSE
+               )
+```
+
+```{r include = FALSE}
+#saveRDS(a.gbm2, file = "RDS/a_gbm2.rds")
+a.gbm2 = readRDS("RDS/a_gbm2.rds")
+```
+
+**Model Results**
+
+The optimal tuning parameters identified through this process are listed below.
+```{r}
+# Best Tune
+a.gbm2$bestTune
+```
+
+This is reflected in the plot below, where we can see that point highlighted in the diamond shape in the middle facet reaches the highest ROC value.
+```{r}
+# Plot
+ggplot(a.gbm2, highlight = TRUE)
+```
+
+**Variable Importance**
+
+Based on the variable importance plot below, we can see that the variable with the most influence is displacement, followed by weight, year, cylinders, horsepower, acceleration, and finally origin. This means the model has assessed the variable displacement as having the greatest influence on whether a car has low or high mileage.
+```{r}
+# Variable Importance
+summary(a.gbm2, las = 2, cBars = 16, cex.names = 0.6)
+```
+
+**Test Data Performance**
+
+As shown in the ROC curve below, this model captures patterns in the data quite well, as the AUC of the ROC is very close to 1.
+
+```{r}
+a.gbm2.pred = predict(a.gbm2, newdata = a.test, type = "prob")[,1]
+roc.gbm2 = roc(a.test$mpg_cat, a.gbm2.pred)
+
+plot(roc.gbm2, col = 2, main = "ROC Curve for GBM Adaboost Model")
+legend("bottomright",
+       legend = paste0("Adaboost: ", round(roc.gbm2$auc[1],3)),
+       col = "red", lwd = 2)
+```
+
+_____
+

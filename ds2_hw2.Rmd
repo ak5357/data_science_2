@@ -10,13 +10,12 @@ library(tidyverse)
 library(ggplot2)
 library(splines)
 library(caret)
-# library(tidymodels)
-# library(mgcv)
-# library(pdp)
+library(nlme)
+library(mgcv)
 library(earth)
 # library(bayesQR)
 
-set.seed(123)
+set.seed(2025)
 ```
 
 
@@ -43,7 +42,8 @@ set.seed(123)
 
 ```{r message = FALSE}
 college = read_csv("data/college.csv") |> 
-  janitor::clean_names()
+  janitor::clean_names() |> 
+  select(-college)
 
 dat_split = rsample::initial_split(data = college, prop = 0.8)
 train_data = rsample::training(dat_split)
@@ -99,7 +99,14 @@ legend("topright", legend = paste("DF =", df_range), col = rainbow(length(df_ran
 
 ```{r}
 df = df_range[which.min(mse_values)]
-paste("Degrees of Freedom:", df, "| MSE:", round(min(mse_values), 2))
+spline_mse = min(mse_values)
+spline_rmse = sqrt(spline_mse)
+paste("Degrees of Freedom:", df, "| MSE:", round(spline_mse, 2))
+
+cat("Smoothing Spline Model Test Error\n",
+    df, "Degrees of Freedom\n",
+    "MSE:\t", spline_mse, "\n",
+    "RMSE:\t", spline_rmse)
 ```
 
 According to the MSE calculations, the optimal degree of freedom for the smoothing spline fit for this data is `r df`. Now let's plot this optimal fit.
@@ -127,47 +134,203 @@ ggplot(data = test_data, aes(x = perc_alumni, y = outstate)) +
 
 **Generate MARS model:**
 ```{r}
+# Define Predictors and Response
+x = model.matrix(outstate ~ ., train_data)[, -1]
+y = train_data$outstate
+
+# Define tuning parameter grid
 mars_grid = expand.grid(degree = 1:3, nprune = 2:15)
+
+# CV setup
+set.seed(2025)
 ctrl = trainControl(method = "cv", number = 10)
 
-
-mars_fit = train(x = train_data$perc_alumni,
-                 y = train_data$outstate,
+# Train MARS model
+set.seed(2025)
+mars_fit = train(x, y,
                  method = "earth",
                  tuneGrid = mars_grid,
                  trControl = ctrl)
+
+# Visualize Model Training
+ggplot(mars_fit)
+
+# Final Tuning Parameters
+mars_fit$bestTune
 ```
 
-
-
-
-
-**Report regression function:**
-
-
-
+**Report regression function:** The coefficients below show the regression coefficients from the final model.
+```{r}
+# Coefficients of Optimal Model
+coef(mars_fit$finalModel)
+```
 
 **Present partial dependence plot of an arbitrary predictor in my model:**
+```{r}
+# PDP for individual feature
+p1 = pdp::partial(mars_fit, pred.var = c("expend"), grid.resolution = 10) |> autoplot()
 
+# PDP for interaction between two features
+p2 = pdp::partial(mars_fit, pred.var = c("expend", "perc_alumni"),
+                   grid.resolution = 10) |>
+     pdp::plotPartial(levelplot = FALSE, zlab = "yhat", drape = TRUE,
+                   screen = list(z = 20, x = -60))
 
+# Display plots
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
 
+**Test error:** The test error for the MARS model (RMSE: 1852.672) is lower than that of the smoothing spline model (RMSE: 2908.062).
+```{r}
+# Define test x and y
+test.x = model.matrix(outstate ~ ., test_data)[, -1]
+test.y = test_data$outstate
 
-**Test error:**
+# Generate predictions using MARS model
+mars_predictions = predict(mars_fit, newdata = test.x)
 
+# Calculate test error
+mars_mse = mean((test.y - mars_predictions)^2)
+mars_rmse = sqrt(mars_mse)
+
+# Output message
+cat("MARS Model Test Error\n",
+    "MSE:\t", mars_mse, "\n",
+    "RMSE:\t", mars_rmse, "\n",
+    "\n",
+    "Smoothing Spline Model Test Error\n",
+    df, "Degrees of Freedom\n",
+    "MSE:\t", spline_mse, "\n",
+    "RMSE:\t", spline_rmse)
+```
 
 ## **Part c**
 
 **Construct a generalized additive model (GAM) to predict the response variable. For the nonlinear terms included in your model, generate plots to visualize these relationships and discuss your observations. Report the test error.**
 
+**Generate GAM model:**
+```{r}
+# Generate GAM model
+set.seed(2025)
+gam_fit = train(x, y,
+                method = "gam",
+                trControl = ctrl)
 
+# Final Tuning Parameters
+gam_fit$bestTune
+
+# Coefficients of Optimal Model
+gam_fit$finalModel
+```
+
+**Generate plots for nonlinear terms:** Based on the GAM final model shown above, we can see that five of the predictors were modeled as linear, two as almost linear, and the rest as non-linear.
+
+| Predictor | EDF | Modeled as... |
+| --- | --- | --- |
+| top10perc | 1.00 | Linear |
+| top25perc | 1.00 | Linear |
+| p_undergrad | 1.00 | Linear |
+| enroll | 1.00 | Linear |
+| apps | 1.00 | Linear |
+| personal | 1.37 | Almost linear |
+| room_board | 1.65 | Almost linear |
+| perc_alumni | 2.12 | Non-linear |
+| accept | 2.12 | Non-linear |
+| books | 2.40 | Non-linear |
+| grad_rate | 3.56 | Non-linear |
+| s_f_ratio | 4.84 | Non-linear |
+| expend | 5.35 | Non-linear |
+| terminal | 5.96 | Non-linear |
+| ph_d | 6.49 | Non-linear |
+| f_undergrad | 6.52 | Non-linear |
+
+
+Below I have visualized the nonlinear terms using a trellis plot setup, adding a smooth line using "loess" method. 
+```{r}
+train_data |> 
+  select(perc_alumni, accept, books, grad_rate, s_f_ratio, expend, terminal, ph_d, f_undergrad, outstate) |> 
+  pivot_longer(
+    cols = -outstate,
+    names_to = "predictor",
+    values_to = "value") |> 
+  mutate(
+    edf = case_match(predictor,
+      "perc_alumni" ~ 2.12,
+      "accept" ~ 2.12,
+      "books" ~ 2.40,
+      "grad_rate" ~ 3.56,
+      "s_f_ratio" ~ 4.84,
+      "expend" ~ 5.35,
+      "terminal" ~ 5.96,
+      "ph_d" ~ 6.49,
+      "f_undergrad" ~ 6.52),
+    predictor = paste0(predictor, " (edf = ", edf, ")")) |> 
+  ggplot(aes(x = value, y = outstate)) +
+  geom_point(color = "darkgreen", alpha = 0.3) +
+  geom_smooth(method = "loess", color = "black", linewidth = 0.5, se = TRUE) +
+  facet_wrap(~ predictor, nrow = 3, scale = "free_x") +
+  labs(title = "GAM Model Nonlinear Terms", y = "outstate") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+**Discuss observations:** Predictors with higher EDFs (e.g. ph_d, terminal) show more clearly nonlinear relationships, with noticeable curves in the LOESS lines. In contrast, predictors with lower EDFs (e.g. perc_alumn, accept) show visual trends that are closer to linear. This visual evidence supports the model's estimation, since higher EDF corresponds to more flexibility. So it makes sense that the terms with higher EDFa have a more "wiggly" shape in their scatterplots.
+
+**Report test error:** It appears that the GAM model has the lowest test error of the three models. GAM uses spline smoothers, rather than hinge functions like MARS, and it also includes all of the predictors, rather than just perc_alumni like the spline model. Perhaps the increased flexibility and 
+```{r}
+# Generate predictions using GAM model
+gam_predictions = predict(gam_fit, newdata = test.x)
+
+# Calculate test error
+gam_mse = mean((test.y - gam_predictions)^2)
+gam_rmse = sqrt(gam_mse)
+
+# Output message
+cat("GAM Model Test Error\n",
+    "MSE:\t", gam_mse, "\n",
+    "RMSE:\t", gam_rmse, "\n",
+    "\n",
+    "MARS Model Test Error\n",
+    "MSE:\t", mars_mse, "\n",
+    "RMSE:\t", mars_rmse, "\n",
+    "\n",
+    "Smoothing Spline Model Test Error\n",
+    df, "Degrees of Freedom\n",
+    "MSE:\t", spline_mse, "\n",
+    "RMSE:\t", spline_rmse)
+```
 
 ## **Part d**
 
-**In this dataset, would you favor a MARS model over a linear model for predicting out-ofstate tuition? If so, why? More broadly, in general applications, do you consider a MARS model to be superior to a linear model? Please share your reasoning.**
+**In this dataset, would you favor a MARS model over a linear model for predicting out-of-state tuition? If so, why? More broadly, in general applications, do you consider a MARS model to be superior to a linear model? Please share your reasoning.**
 
+For this dataset, I would favor a MARS model over a linear model for predicting out-of-state tuition. For this comparison, we can consider the GAM model as a sensitivity analysis for exploring potential nonlinear relationships between predictors and the outcome. Based on the evidence of nonlinearity from the GAM, I would favor the MARS model, as it is better suited to capture nonlinear patterns.
 
+Below, I have trained a linear model `glm_fit` to compare with the MARS model `mars_fit` from earlier. Comparing their validation errors, we can see that the MARS model's validation RMSE is lower. This is additional evidence that the MARS model provides a better fit for the dataset than a linear model.
 
+In general applications, I would not always consider a MARS model to be superior to a linear model. While MARS is flexible and can model nonlinear relationships and interactions automatically, this also means that the resulting model may be more complex and more prone to overfitting than a linear model. The choice between MARS and a linear model should depend on the dataset and whether there is evidence for nonlinear relationships between the predictors and the outcome.
 
+```{r}
+# Generate Linear Model
+set.seed(2025)
+glm_fit = train(x, y,
+                method = "glm",
+                trControl = ctrl)
 
+# GLM Validation Error
+glm_cv_rmse = glm_fit$results$RMSE
+
+# MARS Validation Error
+mars_cv_rmse = mars_fit$results |> 
+  filter(nprune == mars_fit$bestTune$nprune,
+         degree == mars_fit$bestTune$degree) |> 
+  pull(RMSE)
+
+cat("MARS Model Validation Error\n",
+    "RMSE:\t", glm_cv_rmse, "\n",
+    "\n",
+    "Linear Model Validation Error\n",
+    "RMSE:\t", mars_cv_rmse)
+```
 
 
